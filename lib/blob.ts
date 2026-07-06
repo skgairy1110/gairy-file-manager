@@ -64,7 +64,7 @@ export async function createFolder(prefix: string, name: string) {
   const parent = normalizePrefix(prefix);
   const safeName = sanitizeSegment(name);
   const path = `${parent}${safeName}/${KEEP_FILE}`;
-  await put(path, "", {
+ await put(path, "folder placeholder — safe to ignore", {
     access: "public",
     addRandomSuffix: false,
     contentType: "text/plain",
