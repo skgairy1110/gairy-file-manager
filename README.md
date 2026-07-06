@@ -3,9 +3,11 @@
 A minimal, private file manager for hosting and sharing images. Organize images in folders and get a public link for each upload — perfect for embedding images on a website.
 
 - **Login** — Google OAuth or a simple admin username/password
-- **Folders** — create, browse, and delete nested folders
+- **Folders** — create, browse, rename, move, and delete nested folders
 - **Upload** — drag-and-drop or click to upload images (PNG, JPG, GIF, WEBP, SVG, AVIF)
 - **Public links** — every upload gets an instant public URL, click any image to copy its link
+- **Views** — switch between thumbnail grid and list view
+- **Organize** — rename or move any file or folder from its "⋯" menu
 - **Storage** — [Vercel Blob](https://vercel.com/docs/vercel-blob), no database required
 
 ## 1. Deploy to Vercel
@@ -61,6 +63,6 @@ Vercel Blob doesn't have real directories — folders are simulated using path p
 
 ## Notes
 
-- Uploads are capped at 20MB per file and restricted to image types.
+- Uploads go through the server route and are capped at 4.4MB per file — this is a hard limit on Vercel serverless functions, not something this app can configure around. If you need larger files, that requires switching to Vercel Blob's client-upload flow (direct browser-to-Blob upload), which is a bigger change — let your dev tool know if you need this.
 - Every uploaded image is public by design, since the whole point is to get a shareable link. Don't upload anything you don't want publicly accessible.
 - This is built for a small, trusted team — there's no per-user file isolation. Everyone who logs in shares the same file tree.

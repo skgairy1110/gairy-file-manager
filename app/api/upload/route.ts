@@ -15,7 +15,7 @@ const ALLOWED_TYPES = new Set([
   "image/avif",
 ]);
 
-const MAX_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_SIZE = 4.4 * 1024 * 1024; // Vercel serverless functions cap request bodies at 4.5MB
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -38,7 +38,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (file.size > MAX_SIZE) {
-      return NextResponse.json({ error: "File is larger than 20MB." }, { status: 400 });
+      return NextResponse.json(
+        { error: "File is larger than 4.4MB — Vercel's server upload limit. Compress the image and try again." },
+        { status: 400 },
+      );
     }
 
     const blob = await uploadImage(prefix, file);

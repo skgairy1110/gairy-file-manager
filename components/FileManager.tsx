@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
 import Image from "next/image";
+import MoveFolderPicker from "@/components/MoveFolderPicker";
 
 interface FolderEntry {
   name: string;
@@ -18,13 +19,23 @@ interface FileEntry {
 }
 
 type Toast = { id: number; message: string; tone: "success" | "error" };
+type ViewMode = "grid" | "list";
+type ItemRef =
+  | { kind: "folder"; id: string; name: string }
+  | { kind: "file"; id: string; name: string };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|avif)$/i;
+const VIEW_STORAGE_KEY = "vault-view-mode";
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function FolderIcon({ className = "" }: { className?: string }) {
@@ -56,6 +67,98 @@ function ImageFileIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function GridIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className}>
+      <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="11" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="3" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="11" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function ListIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className}>
+      <rect x="3" y="4.25" width="14" height="2" rx="1" fill="currentColor" />
+      <rect x="3" y="9" width="14" height="2" rx="1" fill="currentColor" />
+      <rect x="3" y="13.75" width="14" height="2" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function KebabIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className={className}>
+      <circle cx="10" cy="4" r="1.4" />
+      <circle cx="10" cy="10" r="1.4" />
+      <circle cx="10" cy="16" r="1.4" />
+    </svg>
+  );
+}
+
+function ItemMenu({
+  isFile,
+  onRename,
+  onMove,
+  onCopyLink,
+  onDelete,
+  onClose,
+}: {
+  isFile: boolean;
+  onRename: () => void;
+  onMove: () => void;
+  onCopyLink?: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-8 z-20 w-40 bg-surface border border-border rounded-sm shadow-lg py-1 animate-fade-up"
+    >
+      {isFile && onCopyLink && (
+        <button
+          onClick={onCopyLink}
+          className="w-full text-left px-3 py-2 text-[12.5px] text-ink hover:bg-bg transition-colors"
+        >
+          Copy link
+        </button>
+      )}
+      <button
+        onClick={onRename}
+        className="w-full text-left px-3 py-2 text-[12.5px] text-ink hover:bg-bg transition-colors"
+      >
+        Rename
+      </button>
+      <button
+        onClick={onMove}
+        className="w-full text-left px-3 py-2 text-[12.5px] text-ink hover:bg-bg transition-colors"
+      >
+        Move to…
+      </button>
+      <div className="h-px bg-border my-1" />
+      <button
+        onClick={onDelete}
+        className="w-full text-left px-3 py-2 text-[12.5px] text-danger hover:bg-danger/5 transition-colors"
+      >
+        Delete
+      </button>
+    </div>
+  );
+}
+
 export default function FileManager({
   userName,
   userImage,
@@ -73,7 +176,23 @@ export default function FileManager({
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<ItemRef | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameLoading, setRenameLoading] = useState(false);
+  const [moving, setMoving] = useState<ItemRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === "grid" || stored === "list") setViewMode(stored);
+  }, []);
+
+  function changeViewMode(mode: ViewMode) {
+    setViewMode(mode);
+    window.localStorage.setItem(VIEW_STORAGE_KEY, mode);
+  }
 
   const pushToast = useCallback((message: string, tone: "success" | "error" = "success") => {
     const id = Date.now() + Math.random();
@@ -100,16 +219,10 @@ export default function FileManager({
     load(prefix);
   }, [prefix, load]);
 
-  const crumbs = prefix
-    ? prefix.replace(/\/$/, "").split("/")
-    : [];
+  const crumbs = prefix ? prefix.replace(/\/$/, "").split("/") : [];
 
   function goTo(index: number) {
-    if (index < 0) {
-      setPrefix("");
-    } else {
-      setPrefix(crumbs.slice(0, index + 1).join("/") + "/");
-    }
+    setPrefix(index < 0 ? "" : crumbs.slice(0, index + 1).join("/") + "/");
   }
 
   async function handleCreateFolder(e: React.FormEvent) {
@@ -136,6 +249,7 @@ export default function FileManager({
   }
 
   async function handleDeleteFolder(folder: FolderEntry) {
+    setOpenMenu(null);
     if (!confirm(`Delete "${folder.name}" and everything inside it? This can't be undone.`)) return;
     try {
       const res = await fetch(`/api/folders?prefix=${encodeURIComponent(folder.path)}`, {
@@ -150,6 +264,7 @@ export default function FileManager({
   }
 
   async function handleDeleteFile(file: FileEntry) {
+    setOpenMenu(null);
     if (!confirm(`Delete "${file.name}"?`)) return;
     try {
       const res = await fetch(`/api/files?url=${encodeURIComponent(file.url)}`, {
@@ -192,6 +307,7 @@ export default function FileManager({
   }
 
   async function copyLink(file: FileEntry) {
+    setOpenMenu(null);
     try {
       await navigator.clipboard.writeText(file.url);
       pushToast("Link copied to clipboard");
@@ -204,6 +320,65 @@ export default function FileManager({
     e.preventDefault();
     setDragOver(false);
     if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+  }
+
+  // --- Rename ---
+  function startRename(item: ItemRef) {
+    setOpenMenu(null);
+    setRenaming(item);
+    setRenameValue(item.name);
+  }
+
+  async function submitRename(e: React.FormEvent) {
+    e.preventDefault();
+    if (!renaming || !renameValue.trim()) return;
+    setRenameLoading(true);
+    try {
+      const endpoint = renaming.kind === "file" ? "/api/files" : "/api/folders";
+      const body =
+        renaming.kind === "file"
+          ? { action: "rename", pathname: renaming.id, newName: renameValue }
+          : { action: "rename", path: renaming.id, newName: renameValue };
+      const res = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Rename failed.");
+      pushToast("Renamed successfully");
+      setRenaming(null);
+      load(prefix);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Rename failed.", "error");
+    } finally {
+      setRenameLoading(false);
+    }
+  }
+
+  // --- Move ---
+  function startMove(item: ItemRef) {
+    setOpenMenu(null);
+    setMoving(item);
+  }
+
+  async function confirmMove(destPrefix: string) {
+    if (!moving) return;
+    const endpoint = moving.kind === "file" ? "/api/files" : "/api/folders";
+    const body =
+      moving.kind === "file"
+        ? { action: "move", pathname: moving.id, destPrefix }
+        : { action: "move", path: moving.id, destPrefix };
+    const res = await fetch(endpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Move failed.");
+    pushToast(`Moved "${moving.name}"`);
+    setMoving(null);
+    load(prefix);
   }
 
   const isEmpty = !loading && folders.length === 0 && files.length === 0;
@@ -288,6 +463,28 @@ export default function FileManager({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {/* View toggle */}
+            <div className="flex items-center bg-surface border border-border rounded-sm p-0.5">
+              <button
+                onClick={() => changeViewMode("grid")}
+                className={`h-8 w-8 flex items-center justify-center rounded-sm transition-colors ${
+                  viewMode === "grid" ? "bg-ink text-white" : "text-muted hover:text-ink"
+                }`}
+                title="Thumbnail view"
+              >
+                <GridIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => changeViewMode("list")}
+                className={`h-8 w-8 flex items-center justify-center rounded-sm transition-colors ${
+                  viewMode === "list" ? "bg-ink text-white" : "text-muted hover:text-ink"
+                }`}
+                title="List view"
+              >
+                <ListIcon className="w-4 h-4" />
+              </button>
+            </div>
+
             <button
               onClick={() => setShowNewFolder((s) => !s)}
               className="h-9 px-3.5 rounded-sm border border-border bg-surface hover:bg-white text-[13px] font-medium text-ink transition-colors"
@@ -349,7 +546,7 @@ export default function FileManager({
           </form>
         )}
 
-        {/* Grid */}
+        {/* Content */}
         {loading ? (
           <div className="py-24 text-center text-[13px] text-muted">Loading…</div>
         ) : isEmpty ? (
@@ -360,72 +557,228 @@ export default function FileManager({
               Create a folder to organize your files, or drop images anywhere on this page to upload.
             </p>
           </div>
-        ) : (
+        ) : viewMode === "grid" ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-            {folders.map((folder) => (
-              <div
-                key={folder.path}
-                className="group relative bg-surface border border-border rounded-lg p-3.5 hover:border-accent/40 transition-colors cursor-pointer"
-                onClick={() => setPrefix(folder.path)}
-              >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteFolder(folder);
-                  }}
-                  className="absolute top-2 right-2 w-6 h-6 rounded-sm flex items-center justify-center text-muted hover:text-danger hover:bg-danger/5 opacity-0 group-hover:opacity-100 transition-opacity"
-                  title="Delete folder"
+            {folders.map((folder) => {
+              const menuId = `folder:${folder.path}`;
+              return (
+                <div
+                  key={folder.path}
+                  className="group relative bg-surface border border-border rounded-lg p-3.5 hover:border-accent/40 transition-colors cursor-pointer"
+                  onClick={() => setPrefix(folder.path)}
                 >
-                  ×
-                </button>
-                <FolderIcon className="w-6 h-6 text-accent mb-2" />
-                <p className="text-[13px] font-medium text-ink truncate pr-4">{folder.name}</p>
-                <p className="text-[11px] text-muted mt-0.5">Folder</p>
-              </div>
-            ))}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenMenu(openMenu === menuId ? null : menuId);
+                    }}
+                    className="absolute top-2 right-2 w-6 h-6 rounded-sm flex items-center justify-center text-muted hover:text-ink hover:bg-bg opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <KebabIcon className="w-4 h-4" />
+                  </button>
+                  {openMenu === menuId && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <ItemMenu
+                        isFile={false}
+                        onRename={() => startRename({ kind: "folder", id: folder.path, name: folder.name })}
+                        onMove={() => startMove({ kind: "folder", id: folder.path, name: folder.name })}
+                        onDelete={() => handleDeleteFolder(folder)}
+                        onClose={() => setOpenMenu(null)}
+                      />
+                    </div>
+                  )}
+                  <FolderIcon className="w-6 h-6 text-accent mb-2" />
+                  <p className="text-[13px] font-medium text-ink truncate pr-4">{folder.name}</p>
+                  <p className="text-[11px] text-muted mt-0.5">Folder</p>
+                </div>
+              );
+            })}
 
-            {files.map((file) => (
-              <div
-                key={file.url}
-                className="group relative bg-surface border border-border rounded-lg overflow-hidden hover:border-accent/40 transition-colors"
-              >
-                <button
-                  onClick={() => handleDeleteFile(file)}
-                  className="absolute top-2 right-2 z-10 w-6 h-6 rounded-sm bg-white/90 backdrop-blur flex items-center justify-center text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
-                  title="Delete image"
+            {files.map((file) => {
+              const menuId = `file:${file.pathname}`;
+              return (
+                <div
+                  key={file.url}
+                  className="group relative bg-surface border border-border rounded-lg overflow-hidden hover:border-accent/40 transition-colors"
                 >
-                  ×
-                </button>
-                <button
-                  onClick={() => copyLink(file)}
-                  className="w-full text-left"
-                  title="Copy public link"
-                >
-                  <div className="aspect-square bg-bg flex items-center justify-center overflow-hidden">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={file.url}
-                      alt={file.name}
-                      className="w-full h-full object-cover"
-                      loading="lazy"
+                  <button
+                    onClick={() => setOpenMenu(openMenu === menuId ? null : menuId)}
+                    className="absolute top-2 right-2 z-10 w-6 h-6 rounded-sm bg-white/90 backdrop-blur flex items-center justify-center text-muted hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <KebabIcon className="w-4 h-4" />
+                  </button>
+                  {openMenu === menuId && (
+                    <ItemMenu
+                      isFile
+                      onRename={() => startRename({ kind: "file", id: file.pathname, name: file.name })}
+                      onMove={() => startMove({ kind: "file", id: file.pathname, name: file.name })}
+                      onCopyLink={() => copyLink(file)}
+                      onDelete={() => handleDeleteFile(file)}
+                      onClose={() => setOpenMenu(null)}
                     />
+                  )}
+                  <button onClick={() => copyLink(file)} className="w-full text-left" title="Copy public link">
+                    <div className="aspect-square bg-bg flex items-center justify-center overflow-hidden">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={file.url} alt={file.name} className="w-full h-full object-cover" loading="lazy" />
+                    </div>
+                    <div className="p-2.5">
+                      <p className="text-[12.5px] font-medium text-ink truncate">{file.name}</p>
+                      <p className="text-[11px] text-muted mt-0.5">{formatSize(file.size)}</p>
+                    </div>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          // LIST VIEW
+          <div className="bg-surface border border-border rounded-lg overflow-hidden">
+            <div className="grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2 border-b border-border bg-bg/50">
+              <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Name</span>
+              <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Size</span>
+              <span className="text-[11px] font-medium text-muted uppercase tracking-wide hidden sm:block">
+                Modified
+              </span>
+              <span />
+            </div>
+
+            {folders.map((folder) => {
+              const menuId = `folder:${folder.path}`;
+              return (
+                <div
+                  key={folder.path}
+                  className="group relative grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-bg/60 cursor-pointer transition-colors"
+                  onClick={() => setPrefix(folder.path)}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <FolderIcon className="w-4 h-4 text-accent shrink-0" />
+                    <span className="text-[13px] text-ink truncate">{folder.name}</span>
                   </div>
-                  <div className="p-2.5">
-                    <p className="text-[12.5px] font-medium text-ink truncate">{file.name}</p>
-                    <p className="text-[11px] text-muted mt-0.5">{formatSize(file.size)}</p>
+                  <span className="text-[12px] text-muted">—</span>
+                  <span className="text-[12px] text-muted hidden sm:block">—</span>
+                  <div className="relative flex justify-end">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenu(openMenu === menuId ? null : menuId);
+                      }}
+                      className="w-7 h-7 flex items-center justify-center rounded-sm text-muted hover:text-ink hover:bg-white transition-colors"
+                    >
+                      <KebabIcon className="w-4 h-4" />
+                    </button>
+                    {openMenu === menuId && (
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <ItemMenu
+                          isFile={false}
+                          onRename={() => startRename({ kind: "folder", id: folder.path, name: folder.name })}
+                          onMove={() => startMove({ kind: "folder", id: folder.path, name: folder.name })}
+                          onDelete={() => handleDeleteFolder(folder)}
+                          onClose={() => setOpenMenu(null)}
+                        />
+                      </div>
+                    )}
                   </div>
-                </button>
-              </div>
-            ))}
+                </div>
+              );
+            })}
+
+            {files.map((file) => {
+              const menuId = `file:${file.pathname}`;
+              return (
+                <div
+                  key={file.url}
+                  className="group relative grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-bg/60 transition-colors"
+                >
+                  <button
+                    onClick={() => copyLink(file)}
+                    className="flex items-center gap-2.5 min-w-0 text-left"
+                    title="Copy public link"
+                  >
+                    <div className="w-7 h-7 rounded-sm overflow-hidden bg-bg shrink-0 border border-border">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={file.url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                    </div>
+                    <span className="text-[13px] text-ink truncate">{file.name}</span>
+                  </button>
+                  <span className="text-[12px] text-muted">{formatSize(file.size)}</span>
+                  <span className="text-[12px] text-muted hidden sm:block">{formatDate(file.uploadedAt)}</span>
+                  <div className="relative flex justify-end">
+                    <button
+                      onClick={() => setOpenMenu(openMenu === menuId ? null : menuId)}
+                      className="w-7 h-7 flex items-center justify-center rounded-sm text-muted hover:text-ink hover:bg-white transition-colors"
+                    >
+                      <KebabIcon className="w-4 h-4" />
+                    </button>
+                    {openMenu === menuId && (
+                      <ItemMenu
+                        isFile
+                        onRename={() => startRename({ kind: "file", id: file.pathname, name: file.name })}
+                        onMove={() => startMove({ kind: "file", id: file.pathname, name: file.name })}
+                        onCopyLink={() => copyLink(file)}
+                        onDelete={() => handleDeleteFile(file)}
+                        onClose={() => setOpenMenu(null)}
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </main>
 
+      {/* Rename modal */}
+      {renaming && (
+        <div className="fixed inset-0 z-50 bg-ink/30 backdrop-blur-sm flex items-center justify-center px-4">
+          <form
+            onSubmit={submitRename}
+            className="w-full max-w-sm bg-surface rounded-lg border border-border shadow-xl p-4 animate-fade-up"
+          >
+            <p className="text-[13.5px] font-semibold text-ink mb-3">Rename &ldquo;{renaming.name}&rdquo;</p>
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              className="w-full h-10 px-3 rounded-sm border border-border bg-surface text-[13.5px] text-ink focus:border-accent transition-colors mb-4"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRenaming(null)}
+                className="h-9 px-3.5 rounded-sm text-[13px] text-muted hover:text-ink transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={renameLoading}
+                className="h-9 px-4 rounded-sm bg-accent hover:bg-accent/90 text-[13px] font-medium text-white transition-colors disabled:opacity-60"
+              >
+                {renameLoading ? "Renaming…" : "Rename"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Move modal */}
+      {moving && (
+        <MoveFolderPicker
+          target={{
+            kind: moving.kind,
+            id: moving.id,
+            name: moving.name,
+            currentParent: prefix,
+          }}
+          onCancel={() => setMoving(null)}
+          onConfirm={confirmMove}
+        />
+      )}
+
       {/* Drag overlay */}
       {dragOver && (
-        <div
-          className="fixed inset-0 z-30 bg-accent/5 backdrop-blur-[1px] border-4 border-accent/30 flex items-center justify-center pointer-events-none"
-        >
+        <div className="fixed inset-0 z-30 bg-accent/5 backdrop-blur-[1px] border-4 border-accent/30 flex items-center justify-center pointer-events-none">
           <div className="bg-surface border border-accent/30 rounded-lg px-6 py-4 shadow-lg">
             <p className="text-[14px] font-medium text-ink">Drop images to upload</p>
           </div>
