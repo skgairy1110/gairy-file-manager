@@ -81,7 +81,7 @@ function LoginForm() {
             </svg>
           </div>
           <h1 className="text-[19px] font-semibold text-ink tracking-tight">
-            Sign in to GairyFiles
+            Sign in to Vault
           </h1>
           <p className="text-[13px] text-muted mt-1.5 font-mono">
             ~/your-files

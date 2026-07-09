@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
 import Image from "next/image";
 import MoveFolderPicker from "@/components/MoveFolderPicker";
+import ImagePreviewModal from "@/components/ImagePreviewModal";
 
 interface FolderEntry {
   name: string;
@@ -98,6 +99,45 @@ function KebabIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function CheckIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className}>
+      <path d="M4 10.5l3.5 3.5L16 5.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Small selection checkbox. Stops propagation so it never triggers the tile/row's own click. */
+function SelectCheckbox({
+  checked,
+  onToggle,
+  overlay,
+}: {
+  checked: boolean;
+  onToggle: (shiftKey: boolean) => void;
+  overlay?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+      className={`w-5 h-5 rounded-[5px] border flex items-center justify-center transition-colors shrink-0 ${
+        checked
+          ? "bg-accent border-accent text-white"
+          : overlay
+          ? "bg-white/85 backdrop-blur border-white/60 text-transparent hover:border-accent/60"
+          : "bg-surface border-border text-transparent hover:border-accent/60"
+      }`}
+      title="Select"
+    >
+      <CheckIcon className="w-3 h-3" />
+    </button>
+  );
+}
+
 function ItemMenu({
   isFile,
   onRename,
@@ -166,7 +206,7 @@ export default function FileManager({
   userName: string;
   userImage: string | null;
 }) {
-  const [prefix, setPrefix] = useState("");
+  const [prefix, setPrefixState] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,7 +222,22 @@ export default function FileManager({
   const [renameValue, setRenameValue] = useState("");
   const [renameLoading, setRenameLoading] = useState(false);
   const [moving, setMoving] = useState<ItemRef | null>(null);
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Multi-select
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+
+  // Preview lightbox
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+
+  function setPrefix(p: string) {
+    setSelected(new Set());
+    setLastSelectedIndex(null);
+    setPreviewIndex(null);
+    setPrefixState(p);
+  }
 
   useEffect(() => {
     const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
@@ -356,7 +411,7 @@ export default function FileManager({
     }
   }
 
-  // --- Move ---
+  // --- Move (single item) ---
   function startMove(item: ItemRef) {
     setOpenMenu(null);
     setMoving(item);
@@ -378,6 +433,92 @@ export default function FileManager({
     if (!res.ok) throw new Error(data.error || "Move failed.");
     pushToast(`Moved "${moving.name}"`);
     setMoving(null);
+    load(prefix);
+  }
+
+  // --- Multi-select for images ---
+  function toggleSelect(pathname: string, index: number, shiftKey: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (shiftKey && lastSelectedIndex !== null) {
+        const [start, end] = [Math.min(lastSelectedIndex, index), Math.max(lastSelectedIndex, index)];
+        for (let i = start; i <= end; i++) {
+          next.add(files[i].pathname);
+        }
+      } else if (next.has(pathname)) {
+        next.delete(pathname);
+      } else {
+        next.add(pathname);
+      }
+      return next;
+    });
+    setLastSelectedIndex(index);
+  }
+
+  function handleTileClick(file: FileEntry, index: number, e: React.MouseEvent) {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      toggleSelect(file.pathname, index, e.shiftKey);
+    } else if (selected.size > 0) {
+      // While a selection is active, plain clicks toggle instead of opening the preview.
+      toggleSelect(file.pathname, index, false);
+    } else {
+      setPreviewIndex(index);
+    }
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+    setLastSelectedIndex(null);
+  }
+
+  async function bulkCopyLinks() {
+    const items = files.filter((f) => selected.has(f.pathname));
+    if (!items.length) return;
+    try {
+      await navigator.clipboard.writeText(items.map((f) => f.url).join("\n"));
+      pushToast(`Copied ${items.length} link${items.length > 1 ? "s" : ""}`);
+    } catch {
+      pushToast("Couldn't copy links", "error");
+    }
+  }
+
+  async function bulkDelete() {
+    const items = files.filter((f) => selected.has(f.pathname));
+    if (!items.length) return;
+    if (!confirm(`Delete ${items.length} selected image${items.length > 1 ? "s" : ""}? This can't be undone.`)) return;
+    let successCount = 0;
+    for (const file of items) {
+      try {
+        const res = await fetch(`/api/files?url=${encodeURIComponent(file.url)}`, { method: "DELETE" });
+        if (res.ok) successCount++;
+      } catch {
+        // continue with remaining items
+      }
+    }
+    pushToast(`Deleted ${successCount} image${successCount === 1 ? "" : "s"}`);
+    clearSelection();
+    load(prefix);
+  }
+
+  async function bulkMove(destPrefix: string) {
+    const items = files.filter((f) => selected.has(f.pathname));
+    let successCount = 0;
+    for (const file of items) {
+      try {
+        const res = await fetch("/api/files", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "move", pathname: file.pathname, destPrefix }),
+        });
+        if (res.ok) successCount++;
+      } catch {
+        // continue with remaining items
+      }
+    }
+    pushToast(`Moved ${successCount} image${successCount === 1 ? "" : "s"}`);
+    setBulkMoveOpen(false);
+    clearSelection();
     load(prefix);
   }
 
@@ -437,7 +578,7 @@ export default function FileManager({
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-5 py-8">
+      <main className="max-w-5xl mx-auto px-5 py-8 pb-24">
         {/* Breadcrumb + actions */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div className="font-mono text-[13px] text-muted flex items-center flex-wrap gap-1 min-w-0">
@@ -594,13 +735,23 @@ export default function FileManager({
               );
             })}
 
-            {files.map((file) => {
+            {files.map((file, index) => {
               const menuId = `file:${file.pathname}`;
+              const isSelected = selected.has(file.pathname);
               return (
                 <div
                   key={file.url}
-                  className="group relative bg-surface border border-border rounded-lg overflow-hidden hover:border-accent/40 transition-colors"
+                  className={`group relative bg-surface border rounded-lg overflow-hidden transition-colors ${
+                    isSelected ? "border-accent ring-1 ring-accent/40" : "border-border hover:border-accent/40"
+                  }`}
                 >
+                  <div className="absolute top-2 left-2 z-10">
+                    <SelectCheckbox
+                      overlay
+                      checked={isSelected}
+                      onToggle={(shiftKey) => toggleSelect(file.pathname, index, shiftKey)}
+                    />
+                  </div>
                   <button
                     onClick={() => setOpenMenu(openMenu === menuId ? null : menuId)}
                     className="absolute top-2 right-2 z-10 w-6 h-6 rounded-sm bg-white/90 backdrop-blur flex items-center justify-center text-muted hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
@@ -617,7 +768,11 @@ export default function FileManager({
                       onClose={() => setOpenMenu(null)}
                     />
                   )}
-                  <button onClick={() => copyLink(file)} className="w-full text-left" title="Copy public link">
+                  <button
+                    onClick={(e) => handleTileClick(file, index, e)}
+                    className="w-full text-left"
+                    title={selected.size > 0 ? "Click to select" : "View image"}
+                  >
                     <div className="aspect-square bg-bg flex items-center justify-center overflow-hidden">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={file.url} alt={file.name} className="w-full h-full object-cover" loading="lazy" />
@@ -634,7 +789,8 @@ export default function FileManager({
         ) : (
           // LIST VIEW
           <div className="bg-surface border border-border rounded-lg overflow-hidden">
-            <div className="grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2 border-b border-border bg-bg/50">
+            <div className="grid grid-cols-[24px_1fr_90px_110px_40px] sm:grid-cols-[24px_1fr_100px_130px_40px] items-center px-4 py-2 border-b border-border bg-bg/50 gap-2">
+              <span />
               <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Name</span>
               <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Size</span>
               <span className="text-[11px] font-medium text-muted uppercase tracking-wide hidden sm:block">
@@ -648,9 +804,10 @@ export default function FileManager({
               return (
                 <div
                   key={folder.path}
-                  className="group relative grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-bg/60 cursor-pointer transition-colors"
+                  className="group relative grid grid-cols-[24px_1fr_90px_110px_40px] sm:grid-cols-[24px_1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-bg/60 cursor-pointer transition-colors gap-2"
                   onClick={() => setPrefix(folder.path)}
                 >
+                  <span />
                   <div className="flex items-center gap-2.5 min-w-0">
                     <FolderIcon className="w-4 h-4 text-accent shrink-0" />
                     <span className="text-[13px] text-ink truncate">{folder.name}</span>
@@ -683,17 +840,24 @@ export default function FileManager({
               );
             })}
 
-            {files.map((file) => {
+            {files.map((file, index) => {
               const menuId = `file:${file.pathname}`;
+              const isSelected = selected.has(file.pathname);
               return (
                 <div
                   key={file.url}
-                  className="group relative grid grid-cols-[1fr_90px_110px_40px] sm:grid-cols-[1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-bg/60 transition-colors"
+                  className={`group relative grid grid-cols-[24px_1fr_90px_110px_40px] sm:grid-cols-[24px_1fr_100px_130px_40px] items-center px-4 py-2.5 border-b border-border last:border-b-0 transition-colors gap-2 ${
+                    isSelected ? "bg-accent-soft/60" : "hover:bg-bg/60"
+                  }`}
                 >
+                  <SelectCheckbox
+                    checked={isSelected}
+                    onToggle={(shiftKey) => toggleSelect(file.pathname, index, shiftKey)}
+                  />
                   <button
-                    onClick={() => copyLink(file)}
+                    onClick={(e) => handleTileClick(file, index, e)}
                     className="flex items-center gap-2.5 min-w-0 text-left"
-                    title="Copy public link"
+                    title={selected.size > 0 ? "Click to select" : "View image"}
                   >
                     <div className="w-7 h-7 rounded-sm overflow-hidden bg-bg shrink-0 border border-border">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -727,6 +891,46 @@ export default function FileManager({
           </div>
         )}
       </main>
+
+      {/* Bulk selection bar */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-ink border-t border-black/20 animate-fade-up">
+          <div className="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={clearSelection}
+                className="w-7 h-7 rounded-sm flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+                title="Clear selection"
+              >
+                ×
+              </button>
+              <span className="text-[13px] text-white font-medium">
+                {selected.size} selected
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={bulkCopyLinks}
+                className="h-8 px-3 rounded-sm text-[12.5px] font-medium text-white/90 hover:bg-white/10 transition-colors"
+              >
+                Copy links
+              </button>
+              <button
+                onClick={() => setBulkMoveOpen(true)}
+                className="h-8 px-3 rounded-sm text-[12.5px] font-medium text-white/90 hover:bg-white/10 transition-colors"
+              >
+                Move to…
+              </button>
+              <button
+                onClick={bulkDelete}
+                className="h-8 px-3 rounded-sm text-[12.5px] font-medium text-white hover:bg-danger/80 bg-danger/70 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Rename modal */}
       {renaming && (
@@ -762,17 +966,38 @@ export default function FileManager({
         </div>
       )}
 
-      {/* Move modal */}
+      {/* Move modal (single item) */}
       {moving && (
         <MoveFolderPicker
-          target={{
-            kind: moving.kind,
-            id: moving.id,
-            name: moving.name,
-            currentParent: prefix,
-          }}
+          title={`Move "${moving.name}"`}
+          excludePrefixes={moving.kind === "folder" ? [moving.id] : []}
+          currentParent={prefix}
           onCancel={() => setMoving(null)}
           onConfirm={confirmMove}
+        />
+      )}
+
+      {/* Move modal (bulk) */}
+      {bulkMoveOpen && (
+        <MoveFolderPicker
+          title={`Move ${selected.size} image${selected.size > 1 ? "s" : ""}`}
+          excludePrefixes={[]}
+          currentParent={prefix}
+          onCancel={() => setBulkMoveOpen(false)}
+          onConfirm={bulkMove}
+        />
+      )}
+
+      {/* Image preview */}
+      {previewIndex !== null && files[previewIndex] && (
+        <ImagePreviewModal
+          file={files[previewIndex]}
+          hasPrev={previewIndex > 0}
+          hasNext={previewIndex < files.length - 1}
+          onClose={() => setPreviewIndex(null)}
+          onPrev={() => setPreviewIndex((i) => (i !== null ? i - 1 : i))}
+          onNext={() => setPreviewIndex((i) => (i !== null ? i + 1 : i))}
+          onCopyLink={() => copyLink(files[previewIndex])}
         />
       )}
 
@@ -786,7 +1011,7 @@ export default function FileManager({
       )}
 
       {/* Toasts */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col gap-2 items-center">
+      <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 flex flex-col gap-2 items-center">
         {toasts.map((t) => (
           <div
             key={t.id}

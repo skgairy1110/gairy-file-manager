@@ -7,19 +7,19 @@ interface FolderEntry {
   path: string;
 }
 
-interface MoveTarget {
-  kind: "file" | "folder";
-  id: string; // pathname for files, path (prefix) for folders
-  name: string;
-  currentParent: string; // current folder prefix the item lives in
-}
-
 export default function MoveFolderPicker({
-  target,
+  title,
+  excludePrefixes,
+  currentParent,
   onCancel,
   onConfirm,
 }: {
-  target: MoveTarget;
+  title: string;
+  /** Folder paths (with trailing slash) that must not be offered as a destination — the item(s) being
+   * moved, plus their own descendants, so you can't move a folder into itself. */
+  excludePrefixes: string[];
+  /** The folder the item(s) currently live in, so we can disable "move here" when nothing would change. */
+  currentParent: string;
   onCancel: () => void;
   onConfirm: (destPrefix: string) => Promise<void>;
 }) {
@@ -36,9 +36,8 @@ export default function MoveFolderPicker({
       const res = await fetch(`/api/folders?prefix=${encodeURIComponent(p)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load folders.");
-      // Prevent moving a folder into itself or one of its own descendants.
-      const filtered = (data.folders || []).filter((f: FolderEntry) =>
-        target.kind === "folder" ? !f.path.startsWith(target.id) : true,
+      const filtered = (data.folders || []).filter(
+        (f: FolderEntry) => !excludePrefixes.some((ex) => f.path.startsWith(ex)),
       );
       setFolders(filtered);
       setBrowsePrefix(p);
@@ -47,14 +46,14 @@ export default function MoveFolderPicker({
     } finally {
       setLoading(false);
     }
-  }, [target]);
+  }, [excludePrefixes]);
 
   useEffect(() => {
     load("");
   }, [load]);
 
   const crumbs = browsePrefix ? browsePrefix.replace(/\/$/, "").split("/") : [];
-  const isSameLocation = browsePrefix === target.currentParent;
+  const isSameLocation = browsePrefix === currentParent;
 
   async function handleConfirm() {
     setMoving(true);
@@ -71,9 +70,7 @@ export default function MoveFolderPicker({
     <div className="fixed inset-0 z-50 bg-ink/30 backdrop-blur-sm flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-surface rounded-lg border border-border shadow-xl animate-fade-up">
         <div className="p-4 border-b border-border">
-          <p className="text-[13.5px] font-semibold text-ink">
-            Move &ldquo;{target.name}&rdquo;
-          </p>
+          <p className="text-[13.5px] font-semibold text-ink">{title}</p>
           <p className="text-[12px] text-muted mt-0.5">Choose a destination folder</p>
         </div>
 
